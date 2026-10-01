@@ -34,17 +34,56 @@ That is fine for a home LAN you control. It is *not* fine on coffee shop wifi,
 a dorm or office network, a guest VLAN, or anywhere you would not hand a
 stranger a terminal on the host.
 
-### The better pattern
+### Choosing a Host value
 
-Put a **Tailscale (or other VPN) IP in the Host field instead of `0.0.0.0`.**
-Your phone still reaches the UI with no key from anywhere in the world, but the
-server never listens on your LAN or on any untrusted interface, and there is
-nothing public to scan. This is strictly better than `0.0.0.0` for the "my
-phone can't get to my internal web tools" use case, and it is what I would
-recommend to anyone landing here.
+The Host field in Settings has **Localhost**, **Open to all**, and a **Custom**
+option with a free-text box. Custom accepts a comma-separated list. What you
+put there decides how much this patch costs you:
 
-If you do bind to `0.0.0.0`, pair it with a macOS firewall rule limiting the
-port to your subnet.
+| Host value | Who can reach the keyless UI | Phone on home wifi? | On an untrusted network |
+|---|---|---|---|
+| `127.0.0.1` | the Mac itself | ❌ | safe, but useless for a phone |
+| `0.0.0.0` | **everything on whatever network you are joined to** | ✅ | ⚠️ exposed to strangers |
+| `192.168.x.y` (your LAN IP) | everything on your home LAN | ✅ | ✅ **server refuses to start** |
+| `100.x.y.z` (Tailscale IP) | only your own signed-in devices | ✅ | ✅ not listening there at all |
+
+#### Bind to your actual LAN IP — the zero-dependency option
+
+Instead of `0.0.0.0`, put your Mac's own LAN address in the Custom box, e.g.
+`192.168.20.105`. On your home network this behaves exactly like `0.0.0.0`.
+Join a coffee shop network, though, and your Mac no longer holds that address,
+so the bind fails with `EADDRNOTAVAIL` — and oMLX **exits instead of
+listening**. uvicorn's `bind_socket()` calls `sys.exit()` on a bind error and
+oMLX does not fall back, so this fails closed by construction rather than by
+obscurity.
+
+Three things to know first:
+
+- **Set a DHCP reservation for the Mac.** If your router hands it a different
+  address later, oMLX stops starting at home with a confusing bind error.
+- **You lose `127.0.0.1`.** Local apps pointing at `localhost:8000` break.
+  Use `127.0.0.1,192.168.20.105` to keep both — but note that oMLX binds one
+  socket per host and *any* failed bind aborts startup, so that form means
+  oMLX will not run on a foreign network even for local-only use. There is no
+  way to keep a localhost-only server while away.
+- **It does nothing on your home LAN.** Anyone already on your wifi gets
+  keyless access, same as `0.0.0.0`. The protection is only against networks
+  you did not choose.
+
+Pick a third octet that is not a common default (`192.168.20.x` is a far safer
+bet than `192.168.1.x`) — a foreign network would have to use your exact subnet
+*and* hand you that exact address for the bind to succeed.
+
+#### Bind to a Tailscale IP — the better option if you will install it
+
+A **Tailscale (or other VPN) IP in the Host field** gets you keyless access
+from anywhere, not just at home, while the server never listens on your LAN or
+on any untrusted interface and there is nothing public to scan. It costs you an
+extra app on every device. If you only ever need the UI from your own wifi, the
+LAN-IP option above is simpler and nearly as safe.
+
+If you do use `0.0.0.0`, pair it with a macOS firewall rule limiting the port
+to your subnet.
 
 ### Or just keep the key
 
