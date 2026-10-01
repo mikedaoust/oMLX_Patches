@@ -1,166 +1,163 @@
 # oMLX Patches
 
-Small, reversible patches for [oMLX](https://omlx.app) on macOS.
+A patch for [oMLX](https://omlx.app) on macOS that makes keyless access depend
+on **which address you bind to**, instead of refusing it for anything but
+loopback.
 
 | Patch | What it does |
 |---|---|
-| `omlx-noauth-patch.py` | Lets you enable **Skip API key verification** while the server is bound to a non-loopback host (`0.0.0.0`, a LAN IP, a Tailscale IP), so the admin web UI and API are reachable from other machines without a key. |
+| `omlx-netpolicy-patch.py` | Allows **Skip API key verification** on private addresses (your LAN IP, Tailscale, loopback), keeps the key required on `0.0.0.0` and public IPs, and lets the server start even when a configured address is unavailable. |
 
----
+## The problem
 
-## ⚠️ Read this before using the no-auth patch
+Stock oMLX allows keyless operation only when every bind host is loopback. The
+moment you bind to a LAN address so your phone can reach the admin UI, you are
+required to paste an API key into a phone browser to manage a server sitting in
+your own house.
 
-**Do not expose a patched server to the internet.** No port forwarding, no
-`0.0.0.0` on a VPS, no stuffing it through a tunnel with a public hostname. A
-keyless oMLX on the open internet will be found by a scanner within hours, and
-whoever finds it gets everything below. This patch is for a trusted private
-network and nothing else.
+The blunt fix — disable the check — throws away a real distinction. `0.0.0.0`
+means "listen on every interface of whatever network I am joined to," and that
+follows you onto hotel wifi and guest VLANs. A specific LAN address does not:
+your machine only holds `192.168.20.105` on the network you configured it for.
+Join a different network and that address is simply gone.
 
-That caveat aside, the annoyance it solves is real: when oMLX is a tool on your
-own LAN, having to paste an API key into a phone browser to reach the
-management UI is friction with no security payoff — the key is protecting your
-living room from your living room.
+## The policy after patching
 
-So be clear-eyed about what "keyless" hands out. With the patch applied and the
-toggle on, **anything that can reach the port has full access with no
-credentials** — not just chat completions:
-
-- the admin dashboard (model download, model **deletion**, settings)
-- stored Responses and conversation history
-- MCP tools, web search and web fetch, executed from your machine
-- cluster/pairing endpoints if distributed inference is enabled
-
-That is fine for a home LAN you control. It is *not* fine on coffee shop wifi,
-a dorm or office network, a guest VLAN, or anywhere you would not hand a
-stranger a terminal on the host.
-
-### Choosing a Host value
-
-The Host field in Settings has **Localhost**, **Open to all**, and a **Custom**
-option with a free-text box. Custom accepts a comma-separated list. What you
-put there decides how much this patch costs you:
-
-| Host value | Who can reach the keyless UI | Phone on home wifi? | On an untrusted network |
-|---|---|---|---|
-| `127.0.0.1` | the Mac itself | ❌ | safe, but useless for a phone |
-| `0.0.0.0` | **everything on whatever network you are joined to** | ✅ | ⚠️ exposed to strangers |
-| `192.168.x.y` (your LAN IP) | everything on your home LAN | ✅ | ✅ **server refuses to start** |
-| `127.0.0.1,192.168.x.y` | the Mac **and** your home LAN | ✅ | ✅ **server refuses to start** |
-| `100.x.y.z` (Tailscale IP) | only your own signed-in devices | ✅ | ✅ not listening there at all |
-
-#### Bind to your actual LAN IP — the zero-dependency option
-
-Instead of `0.0.0.0`, put loopback plus your Mac's own LAN address in the
-Custom box, e.g. `127.0.0.1,192.168.20.105`. On your home network this behaves exactly like `0.0.0.0`.
-Join a coffee shop network, though, and your Mac no longer holds that address,
-so the bind fails with `EADDRNOTAVAIL` — and oMLX **exits instead of
-listening**. uvicorn's `bind_socket()` calls `sys.exit()` on a bind error and
-oMLX does not fall back, so this fails closed by construction rather than by
-obscurity.
-
-Three things to know first:
-
-- **Set a DHCP reservation for the Mac.** If your router hands it a different
-  address later, oMLX stops starting at home with a confusing bind error.
-- **Bind both, not just the LAN IP.** A bare `192.168.20.105` breaks local
-  apps pointing at `localhost:8000`. `127.0.0.1,192.168.20.105` is the form
-  you probably want: loopback for anything on the Mac, the LAN address for
-  your phone, and still nothing listening on a foreign network. Be aware that
-  oMLX binds one socket per host and *any* failed bind aborts startup, so
-  off-network oMLX will not run **at all**, even for local-only use. There is
-  no way to keep a localhost-only server while away.
-- **It does nothing on your home LAN.** Anyone already on your wifi gets
-  keyless access, same as `0.0.0.0`. The protection is only against networks
-  you did not choose.
-
-Pick a third octet that is not a common default (`192.168.20.x` is a far safer
-bet than `192.168.1.x`) — a foreign network would have to use your exact subnet
-*and* hand you that exact address for the bind to succeed.
-
-#### Bind to a Tailscale IP — the better option if you will install it
-
-A **Tailscale (or other VPN) IP in the Host field** gets you keyless access
-from anywhere, not just at home, while the server never listens on your LAN or
-on any untrusted interface and there is nothing public to scan. It costs you an
-extra app on every device. If you only ever need the UI from your own wifi, the
-LAN-IP option above is simpler and nearly as safe.
-
-If you do use `0.0.0.0`, pair it with a macOS firewall rule limiting the port
-to your subnet.
-
-### Or just keep the key
-
-Your browser's password manager will fill the dashboard login, and it is a
-one-time thing per browser — including on a phone. If that is tolerable, you do
-not need this patch at all.
-
----
-
-## How the patch works
-
-Every gate — the greyed-out toggle, the "Available only when every server host
-is loopback" warning, the save rejection, the startup `ValueError`, and the CLI
-auto-reset of a saved host back to `127.0.0.1` — funnels through two functions:
-
-| Layer | File (inside `oMLX.app/Contents/Resources/`) | Function |
+| Bind host | Keyless allowed | Why |
 |---|---|---|
-| Backend | `omlx/utils/network.py` | `is_loopback_bind()` |
-| Web UI | `omlx/admin/static/js/dashboard.js` | `isLoopbackBindHost()` |
+| `127.0.0.1`, `localhost`, `::1` | ✅ | nothing else can reach it |
+| `192.168.x.y`, `10.x.y.z`, `172.16–31.x.y` | ✅ | you only hold it on a network you chose |
+| `100.64–127.x.y` (Tailscale) | ✅ | reachable only by your own signed-in devices |
+| `169.254.x.y`, `fe80::/10`, `fc00::/7` | ✅ | link-local / unique-local |
+| `0.0.0.0` or `::` | ❌ **key required** | listens on every network you ever join |
+| any globally routable IP | ❌ **key required** | a public IP is the coffee shop, permanently |
+| any other hostname | ❌ **key required** | cannot be classified without resolving, which varies by network |
 
-`network_auth_error()` calls `is_loopback_bind()` first and returns `None` as
-soon as it's true, so patching that single function also clears the validator
-used by `settings.validate()`, server startup, `verify_api_key()`,
-`require_admin()`, the admin login redirect, and the settings-save endpoint.
-The JS twin drives the disabled toggle, the warning text, and a pre-save guard
-that silently forced `skip_api_key_verification` back to `false` on every save.
+A comma-separated list is keyless only if **every** host in it qualifies, so
+`0.0.0.0,192.168.20.105` still demands a key.
 
-The patch makes both short-circuit to "loopback" for any non-empty host. It
-inserts a marked block at the top of each function and leaves the original
-logic in place below it, so the diff is three lines per file and easy to audit.
+The patch also makes startup **tolerant**: a host this machine cannot currently
+bind is skipped with a warning rather than aborting the process. oMLX gives up
+only when no configured host binds at all.
+
+## What to put in the Host field
+
+Settings → Host → **Custom** takes a comma-separated list.
+
+| Host value | Keyless | Phone on home wifi | On a network you did not choose |
+|---|---|---|---|
+| `127.0.0.1` | ✅ | ❌ | runs, local only |
+| **`127.0.0.1,192.168.x.y`** | ✅ | ✅ | **runs local-only, LAN socket skipped** |
+| `192.168.x.y` alone | ✅ | ✅ | will not start — nothing left to bind |
+| `100.x.y.z` (Tailscale) | ✅ | ✅ anywhere | runs if Tailscale is up |
+| `0.0.0.0` | ❌ key required | ✅ with key | listens to strangers |
+
+**`127.0.0.1,192.168.x.y` is the one most people want.** Loopback for anything
+running on the Mac, the LAN address for your phone, and when you take the
+laptop out of the house the LAN socket silently drops off while local AI keeps
+working.
+
+Two things to do before switching:
+
+- **Reserve the address in your router's DHCP.** Without a reservation, a new
+  lease means your phone quietly stops reaching the server. The patch logs a
+  loud `WARNING: cannot bind ...` line when this happens — that log is your
+  only clue, since the server still starts.
+- **Prefer an unusual subnet.** `192.168.20.x` is a far better bet than
+  `192.168.1.x`, which a coffee shop might plausibly hand you.
+
+## This is lower risk, not safe
+
+On your own LAN, binding to `192.168.20.105` exposes exactly as much as
+`0.0.0.0` does: every device on that wifi — guests, IoT gear, a compromised
+laptop — reaches the admin UI with no credentials. That means model download
+and **deletion**, settings, stored Responses, and MCP/web-fetch tools running
+on your machine.
+
+What the patch buys you is that the exposure **does not travel**. It is scoped
+to a network you chose, and it disappears on its own when you leave. That is a
+meaningful reduction in risk, not a guarantee of safety, and it is worth being
+clear-eyed about which one you are getting.
+
+Never port-forward a keyless oMLX, put it on a VPS, or expose it through a
+public tunnel hostname. The patch refuses keyless on globally routable
+addresses for exactly this reason, but a tunnel in front of a LAN bind would
+route around that.
 
 ## Usage
 
 ```bash
-python3 omlx-noauth-patch.py --status    # show whether each file is patched
-python3 omlx-noauth-patch.py --apply     # patch
-python3 omlx-noauth-patch.py --revert    # restore from backups
+python3 omlx-netpolicy-patch.py --status    # show whether each file is patched
+python3 omlx-netpolicy-patch.py --apply     # patch
+python3 omlx-netpolicy-patch.py --revert    # restore from backups
 ```
 
-`--apply` is idempotent, so re-running it is safe. Each patched file gets a
-`.omlx-noauth.bak` sibling inside the app bundle, and the stale `__pycache__`
-entry for the patched module is removed.
+`--apply` is idempotent. Each patched file gets a `.omlx-netpolicy.bak`
+sibling, and stale `__pycache__` entries are cleared.
 
 ### After applying
 
-1. **Quit oMLX completely and relaunch.** The running server has the old code
-   loaded in memory.
-2. **Hard-reload the dashboard** (`Cmd-Shift-R`). The JS is mtime-cache-busted
-   but your browser may still hold the old copy.
-3. Turn on **Skip API key verification** in Settings and save. The toggle is no
-   longer greyed out at `0.0.0.0`.
+1. **Quit oMLX completely and relaunch.** The running server holds the old
+   code in memory.
+2. **Hard-reload the dashboard** (`Cmd-Shift-R`). The JS is mtime-cache-busted,
+   but your browser may still have the old copy.
+3. Set Host, turn on **Skip API key verification**, save, and restart the
+   server — the Host field carries an amber "Restart" badge.
 
 ### After every oMLX update
 
-Updates replace the app bundle and restore the original files. Just re-run:
+Updates restore the originals. Re-run:
 
 ```bash
-python3 omlx-noauth-patch.py --apply
+python3 omlx-netpolicy-patch.py --apply
 ```
+
+## How it works
+
+Three edits, all inside `oMLX.app/Contents/Resources/`:
+
+| File | Function | Change |
+|---|---|---|
+| `omlx/utils/network.py` | `is_loopback_bind()` | reimplemented as the policy table above |
+| `omlx/cli.py` | the bind loop | skip unbindable hosts, warn, exit only if all fail |
+| `omlx/admin/static/js/dashboard.js` | `isLoopbackBindHost()` | mirror of the predicate |
+
+Every backend gate funnels through `is_loopback_bind()` — startup validation,
+`settings.validate()`, `verify_api_key()`, `require_admin()`, the admin login
+redirect, the settings-save endpoint, and the CLI's auto-reset of a saved host
+back to `127.0.0.1`. `network_auth_error()` returns `None` as soon as that
+predicate is true, so one function carries the whole policy.
+
+The JS mirror is what un-greys the toggle. It is a UI affordance only — the
+backend is authoritative — but mirroring rather than always returning true
+means the toggle still correctly greys out at `0.0.0.0`.
+
+Python's own address classification needed two corrections, both handled:
+`100.64/10` (Tailscale) reports as *neither* private nor global, and `0.0.0.0`
+and `::` report as private, so they are excluded by `is_unspecified` first.
+
+## Verified behavior
+
+- 21 host values checked against the patched backend predicate, including
+  comma lists, IPv4-mapped IPv6, zone IDs, and `172.32.0.1` (outside RFC1918)
+- the JS mirror agrees with the backend on all 21
+- tolerant bind exercised against an address the machine does not hold: one
+  socket bound, warning logged, process continues
+- all-hosts-fail exercised: exits `3` with a message pointing at `127.0.0.1`
 
 ## Notes and caveats
 
 - **macOS will prompt you.** Signed app bundles are write-protected
   (macOS 13+). The first `--apply` triggers a system dialog asking whether to
-  allow modification of oMLX. Approve it or the patch fails with
+  allow modification of oMLX. Approve it, or the patch fails with
   `PermissionError: Operation not permitted`.
 - **Code signature.** Editing bundle resources invalidates oMLX's signature.
   The app still launches, because macOS does not re-verify resource hashes on
-  every launch. If some future macOS release ever refuses to start it, run
-  `--revert` to restore the signed originals, or ad-hoc re-sign with
+  every launch. If a future macOS release refuses it, `--revert` restores the
+  signed originals, or ad-hoc re-sign with
   `codesign --force --deep --sign - /Applications/oMLX.app`.
-- **If oMLX restructures those functions**, `--apply` exits with
-  `anchor not found` instead of silently doing nothing. The anchors are the
-  two regexes at the top of the script and are straightforward to update.
+- **If oMLX restructures these functions**, `--apply` exits with
+  `anchor not found` rather than silently doing nothing.
 - **Non-default install path?** Edit the `APP` constant at the top of the
   script.
 
