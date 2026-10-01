@@ -10,24 +10,47 @@ Small, reversible patches for [oMLX](https://omlx.app) on macOS.
 
 ## ⚠️ Read this before using the no-auth patch
 
-oMLX restricts keyless operation to loopback for a good reason. With this patch
-applied and the toggle on, **anyone who can reach your server's port gets full
-access with no credentials** — not just chat completions, but:
+**Do not expose a patched server to the internet.** No port forwarding, no
+`0.0.0.0` on a VPS, no stuffing it through a tunnel with a public hostname. A
+keyless oMLX on the open internet will be found by a scanner within hours, and
+whoever finds it gets everything below. This patch is for a trusted private
+network and nothing else.
+
+That caveat aside, the annoyance it solves is real: when oMLX is a tool on your
+own LAN, having to paste an API key into a phone browser to reach the
+management UI is friction with no security payoff — the key is protecting your
+living room from your living room.
+
+So be clear-eyed about what "keyless" hands out. With the patch applied and the
+toggle on, **anything that can reach the port has full access with no
+credentials** — not just chat completions:
 
 - the admin dashboard (model download, model **deletion**, settings)
 - stored Responses and conversation history
 - MCP tools, web search and web fetch, executed from your machine
 - cluster/pairing endpoints if distributed inference is enabled
 
-Only do this on a network you control. The safer middle ground is to put a
-**Tailscale IP** in the Host field instead of `0.0.0.0` — you still get keyless
-access from your own devices, but the server is not listening on your LAN or
-on any untrusted interface. A macOS firewall rule limiting the port is a good
-second layer.
+That is fine for a home LAN you control. It is *not* fine on coffee shop wifi,
+a dorm or office network, a guest VLAN, or anywhere you would not hand a
+stranger a terminal on the host.
 
-If you don't want these consequences, keep the API key instead. You can store
-it in your browser's password manager and the dashboard login is a one-time
-thing per browser.
+### The better pattern
+
+Put a **Tailscale (or other VPN) IP in the Host field instead of `0.0.0.0`.**
+Your phone still reaches the UI with no key from anywhere in the world, but the
+server never listens on your LAN or on any untrusted interface, and there is
+nothing public to scan. This is strictly better than `0.0.0.0` for the "my
+phone can't get to my internal web tools" use case, and it is what I would
+recommend to anyone landing here.
+
+If you do bind to `0.0.0.0`, pair it with a macOS firewall rule limiting the
+port to your subnet.
+
+### Or just keep the key
+
+Your browser's password manager will fill the dashboard login, and it is a
+one-time thing per browser — including on a phone. If that is tolerable, you do
+not need this patch at all.
 
 ---
 
