@@ -45,12 +45,13 @@ put there decides how much this patch costs you:
 | `127.0.0.1` | the Mac itself | ❌ | safe, but useless for a phone |
 | `0.0.0.0` | **everything on whatever network you are joined to** | ✅ | ⚠️ exposed to strangers |
 | `192.168.x.y` (your LAN IP) | everything on your home LAN | ✅ | ✅ **server refuses to start** |
+| `127.0.0.1,192.168.x.y` | the Mac **and** your home LAN | ✅ | ✅ **server refuses to start** |
 | `100.x.y.z` (Tailscale IP) | only your own signed-in devices | ✅ | ✅ not listening there at all |
 
 #### Bind to your actual LAN IP — the zero-dependency option
 
-Instead of `0.0.0.0`, put your Mac's own LAN address in the Custom box, e.g.
-`192.168.20.105`. On your home network this behaves exactly like `0.0.0.0`.
+Instead of `0.0.0.0`, put loopback plus your Mac's own LAN address in the
+Custom box, e.g. `127.0.0.1,192.168.20.105`. On your home network this behaves exactly like `0.0.0.0`.
 Join a coffee shop network, though, and your Mac no longer holds that address,
 so the bind fails with `EADDRNOTAVAIL` — and oMLX **exits instead of
 listening**. uvicorn's `bind_socket()` calls `sys.exit()` on a bind error and
@@ -61,11 +62,13 @@ Three things to know first:
 
 - **Set a DHCP reservation for the Mac.** If your router hands it a different
   address later, oMLX stops starting at home with a confusing bind error.
-- **You lose `127.0.0.1`.** Local apps pointing at `localhost:8000` break.
-  Use `127.0.0.1,192.168.20.105` to keep both — but note that oMLX binds one
-  socket per host and *any* failed bind aborts startup, so that form means
-  oMLX will not run on a foreign network even for local-only use. There is no
-  way to keep a localhost-only server while away.
+- **Bind both, not just the LAN IP.** A bare `192.168.20.105` breaks local
+  apps pointing at `localhost:8000`. `127.0.0.1,192.168.20.105` is the form
+  you probably want: loopback for anything on the Mac, the LAN address for
+  your phone, and still nothing listening on a foreign network. Be aware that
+  oMLX binds one socket per host and *any* failed bind aborts startup, so
+  off-network oMLX will not run **at all**, even for local-only use. There is
+  no way to keep a localhost-only server while away.
 - **It does nothing on your home LAN.** Anyone already on your wifi gets
   keyless access, same as `0.0.0.0`. The protection is only against networks
   you did not choose.
